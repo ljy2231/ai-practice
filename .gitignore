@@ -1,0 +1,9 @@
+# 只跟踪源码，不提交用户记录、会话、站点验证文件和本机凭据。
+/private/
+/sessions/
+*.sqlite*
+*.db
+*.pem
+*.key
+.env*
+/[0-9a-f][0-9a-f]*.txt
