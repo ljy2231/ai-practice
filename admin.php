@@ -57,9 +57,10 @@ try {
     if (!in_array($_SERVER['REQUEST_METHOD'], ['GET','POST'], true)) { header('Allow: GET, POST'); http_response_code(405); exit; }
     ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1');
     ini_set('session.gc_maxlifetime', '7200');
-    session_name('AIPRACTICEADMIN');
+    // 新名称避免浏览器继续复用旧版本的管理 Cookie。
+    session_name('__Host-AIPRACTICEADMIN');
     if (session_save_path(sessionDir('admin-sessions')) === false) throw new RuntimeException('admin sessions unavailable');
-    session_set_cookie_params(['path'=>'/admin.php','secure'=>true,'httponly'=>true,'samesite'=>'Strict']);
+    session_set_cookie_params(['path'=>'/','domain'=>'','secure'=>true,'httponly'=>true,'samesite'=>'Lax']);
     if (!session_start()) throw new RuntimeException('admin sessions unavailable');
     $_SESSION['csrf'] ??= bin2hex(random_bytes(32));
     $post = $_SERVER['REQUEST_METHOD'] === 'POST';
@@ -70,7 +71,11 @@ try {
         $now - $_SESSION['admin_since'] <= 28800 && $now - $_SESSION['admin_seen'] <= 1800 &&
         hash_equals($_SESSION['admin_tag'], hash('sha256',$account['password_hash']));
     if (!$authorized) unset($_SESSION['admin_tag'],$_SESSION['admin_since'],$_SESSION['admin_seen']);
-    if ($post && (!is_string($_POST['csrf'] ?? null) || !hash_equals(adminCsrf(), $_POST['csrf']))) { http_response_code(403); echo '操作凭证已失效，请刷新页面后重试。'; exit; }
+    // 登录表单过期时用 GET 重新生成表单，不重放请求；其他后台操作继续拒绝无效凭证。
+    if ($post && (!is_string($_POST['csrf'] ?? null) || !hash_equals(adminCsrf(), $_POST['csrf']))) {
+        if ($action === 'login') adminRedirect('admin.php?retry=1');
+        http_response_code(403); echo '操作凭证已失效，请刷新页面后重试。'; exit;
+    }
     if (!$authorized) {
         if ($post && $action !== 'login') { http_response_code(401); echo '请先使用 TOKEN 登录后台。'; exit; }
         if ($post) {
@@ -89,6 +94,9 @@ try {
                     'admin_since'=>$now,'admin_seen'=>$now];
                 adminRedirect();
             }
+        }
+        if (($_GET['retry'] ?? null) === '1' && !isset($_SESSION['flash'])) {
+            adminFlash('登录表单已更新，请重新输入 TOKEN。若反复出现，请检查浏览器是否允许本站 Cookie。', true);
         }
         adminHeader('管理员登录');
         echo '<section class="panel signin"><p class="eyebrow">ADMIN ACCESS</p><h1>管理员登录</h1>';
