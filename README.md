@@ -33,6 +33,6 @@ printf '%s\n' "$ADMIN_TOKEN" | php admin.php init
 unset ADMIN_TOKEN
 ```
 
-此命令也可用于重置 TOKEN，旧登录会话会失效。建议使用至少 12 个字符的不易猜测的 TOKEN。
+此命令也可用于重置 TOKEN，旧登录会话会失效。建议使用不易猜测的 TOKEN。
 
 公开仓库不含任何线上数据库、账号或会话。

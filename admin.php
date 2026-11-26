@@ -112,7 +112,7 @@ try {
     if ($post && $action === 'token') {
         $old = $_POST['current'] ?? null; $new = $_POST['token'] ?? null;
         if (!adminTokenValid($old) || !password_verify($old,$account['password_hash'])) adminFlash('当前 TOKEN 不正确。',true);
-        elseif (!adminTokenValid($new) || strlen($new)<12 || $new !== ($_POST['confirm'] ?? null) || $new === $old) adminFlash('请填写至少 12 字节、不同于当前值的新 TOKEN，并确保两次输入一致。',true);
+        elseif (!adminTokenValid($new) || $new !== ($_POST['confirm'] ?? null) || $new === $old) adminFlash('请填写不同于当前值的新 TOKEN，并确保两次输入一致。',true);
         else {
             $hash = adminHash($new); $db = adminDb(); $db->beginTransaction();
             $changed = query('UPDATE admin_account SET password_hash=?,temporary=0 WHERE id=1 AND password_hash=?', [$hash,$account['password_hash']])->rowCount();
@@ -128,7 +128,7 @@ try {
     if (!empty($account['temporary']) && $post) { http_response_code(403); echo '请先更换初始 TOKEN。'; exit; }
     if (!empty($account['temporary']) || in_array($_GET['view'] ?? '', ['token','password'], true)) {
         adminHeader('更换 TOKEN');
-        echo '<section class="panel signin"><h1>更换 TOKEN</h1><p class="muted">'.(!empty($account['temporary'])?'首次登录请先更换初始 TOKEN。':'更换后，其他浏览器需要重新登录。').'</p><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><label>当前 TOKEN<input type="password" name="current" autocomplete="current-password" maxlength="1024" required></label><label>新 TOKEN（至少 12 字节）<input type="password" name="token" autocomplete="new-password" maxlength="1024" required></label><label>确认新 TOKEN<input type="password" name="confirm" autocomplete="new-password" required></label><button class="btn primary" name="auth_action" value="token">更新 TOKEN</button></form></section>';
+        echo '<section class="panel signin"><h1>更换 TOKEN</h1><p class="muted">'.(!empty($account['temporary'])?'首次登录请先更换初始 TOKEN。':'更换后，其他浏览器需要重新登录。').'</p><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><label>当前 TOKEN<input type="password" name="current" autocomplete="current-password" maxlength="1024" required></label><label>新 TOKEN<input type="password" name="token" autocomplete="new-password" maxlength="1024" required></label><label>确认新 TOKEN<input type="password" name="confirm" autocomplete="new-password" required></label><button class="btn primary" name="auth_action" value="token">更新 TOKEN</button></form></section>';
         adminFooter(); exit;
     }
     define('ADMIN_PANEL_AUTHORIZED', true);
