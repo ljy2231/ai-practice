@@ -1,6 +1,10 @@
 # 只跟踪源码，不提交用户记录、会话、站点验证文件和本机凭据。
 /private/
 /sessions/
+/admin-sessions/
+/data/
+/web/data/
+admin-bootstrap*
 *.sqlite*
 *.db
 *.pem

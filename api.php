@@ -8,7 +8,8 @@ header('Cache-Control: no-store, private');
 header('X-Content-Type-Options: nosniff');
 const PICK = 100;
 const PAGE_SIZE = 10;
-const PRIVATE_DIR = __DIR__ . '/../private';
+define('AI_PRACTICE_BOOT', true);
+require __DIR__ . '/storage.php';
 
 function respond(array $data, int $status = 200): void {
     http_response_code($status);
@@ -16,48 +17,6 @@ function respond(array $data, int $status = 200): void {
     exit;
 }
 function fail(string $text, int $status): void { respond(['error' => $text], $status); }
-function db(): PDO {
-    static $db;
-    if ($db instanceof PDO) return $db;
-    $db = new PDO('sqlite:' . PRIVATE_DIR . '/practice.sqlite', null, null, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-    $db->exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
-    if (!(int)$db->query('PRAGMA user_version')->fetchColumn()) {
-        $db->beginTransaction();
-        $db->exec('CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-            password_hash TEXT NOT NULL, created_at INTEGER NOT NULL
-        ); CREATE TABLE IF NOT EXISTS attempts (
-            id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), finished INTEGER NOT NULL,
-            right_n INTEGER NOT NULL, wrong_n INTEGER NOT NULL, miss_n INTEGER NOT NULL, total INTEGER NOT NULL,
-            paper TEXT NOT NULL, answers TEXT NOT NULL
-        ); CREATE INDEX IF NOT EXISTS attempts_user_time ON attempts(user_id, finished DESC, id DESC);
-        CREATE TABLE IF NOT EXISTS auth_limits (bucket TEXT PRIMARY KEY, hits INTEGER NOT NULL, until_ts INTEGER NOT NULL);
-        PRAGMA user_version = 1;');
-        $db->commit();
-    }
-    if ((int)$db->query('PRAGMA user_version')->fetchColumn() === 1) {
-        $db->exec('BEGIN IMMEDIATE');
-        if ((int)$db->query('PRAGMA user_version')->fetchColumn() === 1) {
-            $db->exec("ALTER TABLE attempts ADD COLUMN mode TEXT NOT NULL DEFAULT 'exam'; PRAGMA user_version = 2;");
-        }
-        $db->exec('COMMIT');
-    }
-    if ((int)$db->query('PRAGMA user_version')->fetchColumn() === 2) {
-        $db->exec('BEGIN IMMEDIATE');
-        $db->exec('CREATE TABLE IF NOT EXISTS practice_drafts (
-            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            paper_id TEXT NOT NULL, paper TEXT NOT NULL, answers TEXT NOT NULL,
-            position INTEGER NOT NULL, answered INTEGER NOT NULL, total INTEGER NOT NULL
-        ); PRAGMA user_version = 3; COMMIT;');
-    }
-    return $db;
-}
-function query(string $sql, array $params = []): PDOStatement {
-    $q = db()->prepare($sql); $q->execute($params); return $q;
-}
 function bank(): array {
     static $bank;
     return $bank ?? ($bank = require __DIR__ . '/bank.php');
@@ -89,9 +48,10 @@ function login(array $data): void {
     query('DELETE FROM auth_limits WHERE until_ts <= ?', [$now]);
     query('INSERT INTO auth_limits(bucket,hits,until_ts) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET hits=hits+1 WHERE hits < 60', [$ip, $now + 900]);
     if (!(int)db()->query('SELECT changes()')->fetchColumn()) fail('登录尝试过多，请稍后再试。', 429);
-    $lookup = 'SELECT id, username, password_hash FROM users WHERE username=?';
+    $lookup = 'SELECT id, username, password_hash, banned, session_version FROM users WHERE username=?';
     $row = query($lookup, [$user])->fetch(); $created = false;
     if (!$row) {
+        if (strcasecmp($user, 'admin') === 0) fail('管理员请使用独立后台入口。', 403);
         $digest = password_hash($pass, PASSWORD_ARGON2ID, ['memory_cost'=>19456, 'time_cost'=>2, 'threads'=>1]);
         $created = query('INSERT OR IGNORE INTO users(username,password_hash,created_at) VALUES (?,?,?)', [$user, $digest, $now])->rowCount() === 1;
         $row = query($lookup, [$user])->fetch();
@@ -100,7 +60,8 @@ function login(array $data): void {
     $legacy = password_get_info($row['password_hash'])['algoName'] === 'bcrypt';
     if (!$created && (($legacy && (strlen($pass) > 72 || strpos($pass, "\0") !== false)) || !password_verify($pass, $row['password_hash']))) fail('用户名或密码不正确。', 401);
     if (!$created) query('UPDATE auth_limits SET hits=max(0,hits-1) WHERE bucket=?', [$ip]);
-    $next = ['uid' => (int)$row['id'], 'user' => $row['username'], 'account_tag' => hash('sha256', $row['password_hash'])];
+    if ((int)$row['banned'] !== 0) fail('该账号已停用。', 403);
+    $next = ['uid' => (int)$row['id'], 'user' => $row['username'], 'account_tag' => hash('sha256', $row['password_hash']), 'account_version' => (int)$row['session_version']];
     // 仅将本会话尚未交卷的游客试卷带入登录态，不在账号间转移试卷。
     if (!isset($_SESSION['uid']) && isset($_SESSION['active'])) $next['active'] = $_SESSION['active'];
     resetSession($next);
@@ -110,6 +71,17 @@ function questions(array $paper): array {
     return array_map(static function ($q) {
         return ['text' => $q[0], 'options' => $q[1] ?? ['正确', '错误'], 'type' => $q[1] === null ? 'tf' : 'single'];
     }, $paper);
+}
+function activeAccount(int $uid): bool {
+    $account = query('SELECT password_hash,banned,session_version FROM users WHERE id=? AND username=? COLLATE BINARY', [$uid, $_SESSION['user']])->fetch();
+    return $account && !(int)$account['banned'] && (int)($_SESSION['account_version'] ?? 0) === (int)$account['session_version'] &&
+        isset($_SESSION['account_tag']) && hash_equals($_SESSION['account_tag'], hash('sha256', $account['password_hash']));
+}
+function lockActiveAccount(int $uid): void {
+    db()->exec('BEGIN IMMEDIATE');
+    if (!activeAccount($uid)) {
+        db()->exec('ROLLBACK'); resetSession([]); fail('当前登录已失效，请重新登录。', 401);
+    }
 }
 function startPaper(array $body): void {
     $mode = $body['mode'] ?? 'exam';
@@ -128,7 +100,9 @@ function startPaper(array $body): void {
     if ($mode === 'practice') foreach ($paper as $i => $q) $paper[$i][3] = $notes[$ids[$i]];
     $id = bin2hex(random_bytes(16));
     if ($mode === 'practice' && ($body['discardDraft'] ?? false) === true && isset($_SESSION['uid'])) {
+        lockActiveAccount($_SESSION['uid']);
         query('DELETE FROM practice_drafts WHERE user_id=?', [$_SESSION['uid']]);
+        db()->exec('COMMIT');
     }
     unset($_SESSION['guest_receipt']);
     $_SESSION['active'] = ['id' => $id, 'paper' => $paper, 'mode' => $mode];
@@ -169,7 +143,7 @@ function saveDraft(array $body, int $uid): void {
     [, $miss] = checkAnswers($paper, $answers, true);
     $total = count($paper); $answered = $total - $miss;
     if (!is_int($index) || $index < 0 || $index >= $total || $index > $answered) fail('当前题号无效。', 422);
-    db()->exec('BEGIN IMMEDIATE');
+    lockActiveAccount($uid);
     if (query('SELECT 1 FROM attempts WHERE id=? AND user_id=?', [$id,$uid])->fetchColumn()) {
         db()->exec('ROLLBACK'); fail('该练习已交卷，无法再保存进度。', 409);
     }
@@ -206,12 +180,13 @@ function submitPaper(array $body, ?int $uid): void {
             'correct'=>array_column($paper, 2), 'explanations'=>array_column($paper, 3), 'answers'=>$answers];
         unset($_SESSION['active']); respond($_SESSION['guest_receipt']);
     }
-    db()->beginTransaction();
+    lockActiveAccount($uid);
     query('INSERT OR IGNORE INTO attempts(id,user_id,mode,finished,right_n,wrong_n,miss_n,total,paper,answers) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [$id, $uid, $active['mode'] ?? 'exam', time(), $right, $total - $right - $miss, $miss, $total, json_encode($paper, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), json_encode($answers, JSON_THROW_ON_ERROR)]);
     if ($practice) query('DELETE FROM practice_drafts WHERE user_id=? AND paper_id=?', [$uid,$id]);
-    db()->commit();
-    unset($_SESSION['active']); respond(detail(record($id, $uid)));
+    $saved = record($id, $uid);
+    db()->exec('COMMIT');
+    unset($_SESSION['active']); respond(detail($saved));
 }
 function history(int $uid): void {
     $page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT, ['options'=>['min_range'=>1]]);
@@ -227,7 +202,7 @@ try {
     ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1');
     ini_set('session.gc_maxlifetime', '86400');
     session_name('AIPRACTICE');
-    if (session_save_path(PRIVATE_DIR . '/sessions') === false) throw new RuntimeException('private sessions unavailable');
+    if (session_save_path(dataDir() . '/sessions') === false) throw new RuntimeException('private sessions unavailable');
     session_set_cookie_params(['path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
     if (!session_start()) throw new RuntimeException('session storage unavailable');
     $_SESSION['csrf'] ??= bin2hex(random_bytes(32));
@@ -235,13 +210,8 @@ try {
     $methods = ['me'=>'GET', 'login'=>'POST', 'logout'=>'POST', 'start'=>'POST', 'grade'=>'POST', 'submit'=>'POST', 'history'=>'GET', 'detail'=>'GET', 'draft'=>'GET', 'saveDraft'=>'POST', 'resumeDraft'=>'POST'];
     if (!is_string($action) || !isset($methods[$action])) fail('接口不存在。', 404);
     if ($_SERVER['REQUEST_METHOD'] !== $methods[$action]) { header('Allow: ' . $methods[$action]); fail('请求方法不正确。', 405); }
-    if (isset($_SESSION['uid'])) {
-        $hash = query('SELECT password_hash FROM users WHERE id=? AND username=? COLLATE BINARY', [$_SESSION['uid'], $_SESSION['user']])->fetchColumn();
-        // 删除后即使同名重建且 SQLite 复用行号，旧会话也不可进入新账号。
-        $oldDeletedAccount = !isset($_SESSION['account_tag']) && strcasecmp($_SESSION['user'], 'admin') === 0;
-        if (!$hash || $oldDeletedAccount || (isset($_SESSION['account_tag']) && !hash_equals($_SESSION['account_tag'], hash('sha256', $hash)))) resetSession([]);
-        else $_SESSION['account_tag'] = hash('sha256', $hash);
-    }
+    // 删除、改名、封禁均使既有会话失效；解封也不会让旧会话复活。
+    if (isset($_SESSION['uid']) && !activeAccount($_SESSION['uid'])) resetSession([]);
     $body = $methods[$action] === 'POST' ? readInput($action === 'login' ? 1048576 : 8192) : [];
     if ($action === 'me') respond(identity());
     if ($action === 'login') login($body);
