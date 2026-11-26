@@ -23,12 +23,16 @@ location ^~ /data/ { return 404; }
 
 ## 管理后台
 
-入口：`/admin.php`，账号：`admin`。复制了原数据库就可以直接用原密码。全新部署时，以 PHP 运行用户在站点目录执行以下命令，通过标准输入设置至少 12 个字符的临时密码（首次登录需要修改）：
+入口：`/admin.php`，只输入 **TOKEN**，无需用户名。复制了已配置的数据库就可以继续用原 TOKEN。
+
+全新部署时，后台默认关闭登录。以 PHP 运行用户在站点目录执行 `php admin.php init --default`，可显式启用初始 TOKEN `admin`；首次登录必须更换，建议仅在本地初始化，不要把使用默认 TOKEN 的后台暴露到公网。也可直接设置自己的 TOKEN：
 
 ```bash
-read -rs -p '管理员临时密码: ' ADMIN_PASSWORD; printf '\n'
-printf '%s\n' "$ADMIN_PASSWORD" | php admin.php init
-unset ADMIN_PASSWORD
+read -rs -p '后台 TOKEN: ' ADMIN_TOKEN; printf '\n'
+printf '%s\n' "$ADMIN_TOKEN" | php admin.php init
+unset ADMIN_TOKEN
 ```
+
+此命令也可用于重置 TOKEN，旧登录会话会失效。建议使用至少 12 个字符的不易猜测的 TOKEN。
 
 公开仓库不含任何线上数据库、账号或会话。

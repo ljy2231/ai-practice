@@ -16,31 +16,34 @@ function adminHeader(string $title): void {
     echo '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>'.h($title).' · 理论练习室后台</title><link rel="stylesheet" href="admin.css?v=1"><link rel="icon" href="favicon.svg"></head><body><header class="top"><div class="wrap top-inner"><a class="brand" href="admin.php">理论练习室 <small>管理后台</small></a><a class="btn ghost" href="index.php">返回练习站</a></div></header><main class="wrap">';
     if (isset($_SESSION['admin_tag'])) {
         echo '<nav class="nav" aria-label="后台导航">';
-        if (empty($_SESSION['admin_temporary'])) {
-            $pages = ['dashboard'=>'概览','users'=>'用户管理','records'=>'答题记录','log'=>'操作日志'];
-            $view = $_GET['view'] ?? 'dashboard';
-            foreach ($pages as $key=>$label) {
-                $current = $view === $key || ($view === 'user' && $key === 'users') || ($view === 'record' && $key === 'records');
-                echo '<a href="admin.php?view='.$key.'"'.($current?' aria-current="page"':'').'>'.$label.'</a>';
-            }
+        $pages = ['dashboard'=>'概览','users'=>'用户管理','records'=>'答题记录','log'=>'操作日志'];
+        $view = $_GET['view'] ?? 'dashboard';
+        foreach ($pages as $key=>$label) {
+            $current = $view === $key || ($view === 'user' && $key === 'users') || ($view === 'record' && $key === 'records');
+            echo '<a href="admin.php?view='.$key.'"'.($current?' aria-current="page"':'').'>'.$label.'</a>';
         }
-        echo '<a href="admin.php?view=password">修改密码</a><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><button class="btn ghost" name="auth_action" value="logout">退出</button></form></nav>';
+        echo '<a href="admin.php?view=token">更换 TOKEN</a><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><button class="btn ghost" name="auth_action" value="logout">退出</button></form></nav>';
     }
     if ($flash) echo '<div role="status" class="flash'.($flash[1]?' error':'').'">'.h($flash[0]).'</div>';
 }
 function adminFooter(): void { echo '</main><footer class="wrap">理论练习室 · @LJY2231</footer></body></html>'; }
-function adminPasswordValid(string $password): bool { return strlen($password) <= 1024 && preg_match('/\A.{12,}\z/us', $password) === 1; }
-function adminHash(string $password): string { return password_hash($password, PASSWORD_ARGON2ID, ['memory_cost'=>19456,'time_cost'=>2,'threads'=>1]); }
+function adminTokenValid($token): bool { return is_string($token) && $token !== '' && strlen($token) <= 1024 && strpbrk($token, "\0\r\n") === false; }
+function adminHash(string $token): string { return password_hash($token, PASSWORD_ARGON2ID, ['memory_cost'=>19456,'time_cost'=>2,'threads'=>1]); }
 
-// 仅 CLI 可以配置初始密码。明文从 stdin 读取，不进入命令行参数、日志或仓库。
+// 仅服务器 CLI 能初始化或重置。公开初始值只在显式选择时启用，并要求首次更换。
 if (PHP_SAPI === 'cli') {
-    if (($argv[1] ?? '') !== 'init') { fwrite(STDERR, "Usage: php admin.php init < password-file\n"); exit(2); }
-    $input = fgets(STDIN, 1027); $password = $input === false ? '' : rtrim($input, "\r\n");
-    if (!adminPasswordValid($password)) { fwrite(STDERR, "管理员密码至少 12 个字符，且最多 1024 字节。\n"); exit(2); }
+    if (($argv[1] ?? '') !== 'init' || !in_array($argv[2] ?? '', ['', '--default'], true) || count($argv)>3) {
+        fwrite(STDERR, "Usage: php admin.php init < token-file | php admin.php init --default\n"); exit(2);
+    }
+    $default = ($argv[2] ?? '') === '--default';
+    $input = $default ? 'admin' : fgets(STDIN, 1027);
+    $token = $input === false ? '' : rtrim($input, "\r\n");
+    if (!adminTokenValid($token)) { fwrite(STDERR, "请输入非空的单行 TOKEN（最多 1024 字节）。\n"); exit(2); }
+    $temporary = $token === 'admin' ? 1 : 0;
     $db = adminDb(); $db->beginTransaction();
-    query('INSERT INTO admin_account(id,password_hash,temporary) VALUES (1,?,1) ON CONFLICT(id) DO UPDATE SET password_hash=excluded.password_hash,temporary=1', [adminHash($password)]);
-    query('INSERT INTO admin_log(created_at,action,target,detail) VALUES (?,?,?,?)', [time(),'admin_init','admin','通过服务器命令设置临时密码']);
-    $db->commit(); echo "管理员 admin 的临时密码已设置；首次登录须修改。\n"; exit;
+    query('INSERT INTO admin_account(id,password_hash,temporary) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET password_hash=excluded.password_hash,temporary=excluded.temporary', [adminHash($token),$temporary]);
+    query('INSERT INTO admin_log(created_at,action,target,detail) VALUES (?,?,?,?)', [time(),'admin_init','admin','通过服务器命令设置登录 TOKEN']);
+    $db->commit(); echo $temporary ? "已设置初始 TOKEN；登录后需更换。\n" : "后台登录 TOKEN 已设置。\n"; exit;
 }
 
 header('Content-Type: text/html; charset=utf-8');
@@ -66,31 +69,31 @@ try {
     $authorized = $account && isset($_SESSION['admin_tag'],$_SESSION['admin_since'],$_SESSION['admin_seen']) &&
         $now - $_SESSION['admin_since'] <= 28800 && $now - $_SESSION['admin_seen'] <= 1800 &&
         hash_equals($_SESSION['admin_tag'], hash('sha256',$account['password_hash']));
-    if (!$authorized) unset($_SESSION['admin_tag'],$_SESSION['admin_temporary'],$_SESSION['admin_since'],$_SESSION['admin_seen']);
+    if (!$authorized) unset($_SESSION['admin_tag'],$_SESSION['admin_since'],$_SESSION['admin_seen']);
     if ($post && (!is_string($_POST['csrf'] ?? null) || !hash_equals(adminCsrf(), $_POST['csrf']))) { http_response_code(403); echo '操作凭证已失效，请刷新页面后重试。'; exit; }
     if (!$authorized) {
-        if ($post && $action !== 'login') { http_response_code(401); echo '请先登录管理员账号。'; exit; }
+        if ($post && $action !== 'login') { http_response_code(401); echo '请先使用 TOKEN 登录后台。'; exit; }
         if ($post) {
-            $password = $_POST['password'] ?? null; $name = $_POST['username'] ?? null;
+            $token = $_POST['token'] ?? null;
             $ip = 'admin:'.hash('sha256',$_SERVER['REMOTE_ADDR'] ?? 'local');
             query('DELETE FROM auth_limits WHERE until_ts <= ?', [$now]);
             query('INSERT INTO auth_limits(bucket,hits,until_ts) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET hits=hits+1 WHERE hits<8', [$ip,$now+900]);
             $allowed = (int)adminDb()->query('SELECT changes()')->fetchColumn();
             if (!$allowed) { http_response_code(429); adminFlash('尝试次数过多，请稍后再登录。', true); }
-            elseif (!$account || !is_string($password) || strlen($password)>1024 || $name!=='admin' || !password_verify($password,$account['password_hash'])) {
-                http_response_code(401); adminFlash('管理员账号或密码不正确。', true);
+            elseif (!$account || !adminTokenValid($token) || !password_verify($token,$account['password_hash'])) {
+                http_response_code(401); adminFlash('TOKEN 不正确。', true);
             } else {
                 query('DELETE FROM auth_limits WHERE bucket=?', [$ip]);
                 if (!session_regenerate_id(true)) throw new RuntimeException('admin session rotation failed');
                 $_SESSION = ['csrf'=>bin2hex(random_bytes(32)), 'admin_tag'=>hash('sha256',$account['password_hash']),
-                    'admin_since'=>$now,'admin_seen'=>$now,'admin_temporary'=>(bool)$account['temporary']];
+                    'admin_since'=>$now,'admin_seen'=>$now];
                 adminRedirect();
             }
         }
         adminHeader('管理员登录');
         echo '<section class="panel signin"><p class="eyebrow">ADMIN ACCESS</p><h1>管理员登录</h1>';
-        if (!$account) echo '<p class="muted">管理员尚未初始化。请在服务器上设置临时密码。</p>';
-        else echo '<p class="muted">使用独立的管理账号。学员账号不能登录此处。</p><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><label>账号<input name="username" value="admin" autocomplete="username" required></label><label>密码<input type="password" name="password" autocomplete="current-password" maxlength="1024" required></label><button class="btn primary" name="auth_action" value="login">登录后台</button></form>';
+        if (!$account) echo '<p class="muted">后台尚未初始化，请在服务器上设置 TOKEN。</p>';
+        else echo '<form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><label>TOKEN<input type="password" name="token" autocomplete="current-password" maxlength="1024" required></label><button class="btn primary" name="auth_action" value="login">登录后台</button></form>';
         echo '</section>'; adminFooter(); exit;
     }
     $_SESSION['admin_seen'] = $now;
@@ -98,26 +101,26 @@ try {
         if (!session_regenerate_id(true)) throw new RuntimeException('admin session rotation failed');
         $_SESSION = []; adminRedirect();
     }
-    if ($post && $action === 'password') {
-        $old = $_POST['current'] ?? null; $new = $_POST['password'] ?? null;
-        if (!is_string($old) || strlen($old)>1024 || !password_verify($old,$account['password_hash'])) adminFlash('当前密码不正确。',true);
-        elseif (!is_string($new) || !adminPasswordValid($new) || $new !== ($_POST['confirm'] ?? null) || $new === $old) adminFlash('请输入不同于当前密码的新密码（至少 12 个字符），并确保两次输入一致。',true);
+    if ($post && $action === 'token') {
+        $old = $_POST['current'] ?? null; $new = $_POST['token'] ?? null;
+        if (!adminTokenValid($old) || !password_verify($old,$account['password_hash'])) adminFlash('当前 TOKEN 不正确。',true);
+        elseif (!adminTokenValid($new) || strlen($new)<12 || $new !== ($_POST['confirm'] ?? null) || $new === $old) adminFlash('请填写至少 12 字节、不同于当前值的新 TOKEN，并确保两次输入一致。',true);
         else {
             $hash = adminHash($new); $db = adminDb(); $db->beginTransaction();
             $changed = query('UPDATE admin_account SET password_hash=?,temporary=0 WHERE id=1 AND password_hash=?', [$hash,$account['password_hash']])->rowCount();
-            if ($changed) query('INSERT INTO admin_log(created_at,action,target,detail) VALUES (?,?,?,?)', [$now,'admin_password','admin','已修改管理员密码']);
+            if ($changed) query('INSERT INTO admin_log(created_at,action,target,detail) VALUES (?,?,?,?)', [$now,'admin_password','admin','已更换后台登录 TOKEN']);
             $db->commit();
-            if (!$changed) { adminFlash('管理员密码已经变更，请重新登录。',true); adminRedirect(); }
+            if (!$changed) { adminFlash('TOKEN 已变更，请重新登录。',true); adminRedirect(); }
             if (!session_regenerate_id(true)) throw new RuntimeException('admin session rotation failed');
-            $_SESSION['admin_tag']=hash('sha256',$hash); $_SESSION['admin_temporary']=false; $_SESSION['csrf']=bin2hex(random_bytes(32));
-            adminFlash('管理员密码已更新。'); adminRedirect();
+            $_SESSION['admin_tag']=hash('sha256',$hash); $_SESSION['csrf']=bin2hex(random_bytes(32));
+            adminFlash('TOKEN 已更新。'); adminRedirect();
         }
-        adminRedirect('admin.php?view=password');
+        adminRedirect('admin.php?view=token');
     }
-    if (!empty($account['temporary']) && $post) { http_response_code(403); echo '请先修改临时密码。'; exit; }
-    if (!empty($account['temporary']) || ($_GET['view'] ?? '') === 'password') {
-        adminHeader('修改管理员密码');
-        echo '<section class="panel signin"><h1>修改管理员密码</h1><p class="muted">'.(!empty($account['temporary'])?'首次登录请先更换临时密码。':'修改后，其他浏览器需要重新登录。').'</p><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><label>当前密码<input type="password" name="current" autocomplete="current-password" maxlength="1024" required></label><label>新密码（至少 12 个字符）<input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label><label>确认新密码<input type="password" name="confirm" autocomplete="new-password" required></label><button class="btn primary" name="auth_action" value="password">更新密码</button></form></section>';
+    if (!empty($account['temporary']) && $post) { http_response_code(403); echo '请先更换初始 TOKEN。'; exit; }
+    if (!empty($account['temporary']) || in_array($_GET['view'] ?? '', ['token','password'], true)) {
+        adminHeader('更换 TOKEN');
+        echo '<section class="panel signin"><h1>更换 TOKEN</h1><p class="muted">'.(!empty($account['temporary'])?'首次登录请先更换初始 TOKEN。':'更换后，其他浏览器需要重新登录。').'</p><form method="post" action="admin.php"><input type="hidden" name="csrf" value="'.h(adminCsrf()).'"><label>当前 TOKEN<input type="password" name="current" autocomplete="current-password" maxlength="1024" required></label><label>新 TOKEN（至少 12 字节）<input type="password" name="token" autocomplete="new-password" maxlength="1024" required></label><label>确认新 TOKEN<input type="password" name="confirm" autocomplete="new-password" required></label><button class="btn primary" name="auth_action" value="token">更新 TOKEN</button></form></section>';
         adminFooter(); exit;
     }
     define('ADMIN_PANEL_AUTHORIZED', true);
