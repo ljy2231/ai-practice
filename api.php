@@ -202,7 +202,7 @@ try {
     ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1');
     ini_set('session.gc_maxlifetime', '86400');
     session_name('AIPRACTICE');
-    if (session_save_path(dataDir() . '/sessions') === false) throw new RuntimeException('private sessions unavailable');
+    if (session_save_path(sessionDir('sessions')) === false) throw new RuntimeException('private sessions unavailable');
     session_set_cookie_params(['path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'Lax']);
     if (!session_start()) throw new RuntimeException('session storage unavailable');
     $_SESSION['csrf'] ??= bin2hex(random_bytes(32));

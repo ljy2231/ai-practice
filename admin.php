@@ -55,7 +55,7 @@ try {
     ini_set('session.use_strict_mode', '1'); ini_set('session.use_only_cookies', '1');
     ini_set('session.gc_maxlifetime', '7200');
     session_name('AIPRACTICEADMIN');
-    if (session_save_path(dataDir().'/admin-sessions') === false) throw new RuntimeException('admin sessions unavailable');
+    if (session_save_path(sessionDir('admin-sessions')) === false) throw new RuntimeException('admin sessions unavailable');
     session_set_cookie_params(['path'=>'/admin.php','secure'=>true,'httponly'=>true,'samesite'=>'Strict']);
     if (!session_start()) throw new RuntimeException('admin sessions unavailable');
     $_SESSION['csrf'] ??= bin2hex(random_bytes(32));

@@ -2,8 +2,9 @@
 /private/
 /sessions/
 /admin-sessions/
-/data/
-/web/data/
+/data/*
+!/data/.htaccess
+/.user.ini
 admin-bootstrap*
 *.sqlite*
 *.db

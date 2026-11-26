@@ -1,8 +1,0 @@
-services:
-  web:
-    build: .
-    ports:
-      - "127.0.0.1:${WEB_PORT:-8080}:80"
-    volumes:
-      - "${WEB_DATA_DIR:-/web/data}:/web/data"
-    restart: unless-stopped

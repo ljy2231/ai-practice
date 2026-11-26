@@ -4,12 +4,19 @@ declare(strict_types=1);
 if (!defined('AI_PRACTICE_BOOT')) { http_response_code(404); exit; }
 
 function dataDir(): string {
-    $configured = getenv('AI_PRACTICE_DATA_DIR');
-    if ($configured !== false && $configured !== '') {
-        if ($configured[0] !== '/') throw new RuntimeException('AI_PRACTICE_DATA_DIR must be absolute');
-        return rtrim($configured, '/');
+    $root = __DIR__ . '/data';
+    if (!is_dir($root) && !@mkdir($root, 0700) && !is_dir($root)) {
+        throw new RuntimeException('Cannot create data directory');
     }
-    return __DIR__ . '/../private'; // 兼容早期 1Panel 安装。
+    return $root;
+}
+
+function sessionDir(string $name): string {
+    $path = dataDir() . '/' . $name;
+    if (!is_dir($path) && !@mkdir($path, 0700) && !is_dir($path)) {
+        throw new RuntimeException('Cannot create session directory');
+    }
+    return $path;
 }
 
 function db(): PDO {
