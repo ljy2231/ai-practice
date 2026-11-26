@@ -14,7 +14,7 @@ header('Cache-Control: no-cache');
   <title>计算机程序设计员 · 理论练习室</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=blue-1">
   <link rel="stylesheet" href="style.css?v=practice-draft-3">
-  <script src="app.js?v=practice-draft-3" defer></script>
+  <script src="app.js?v=login-required-1" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">跳到主要内容</a>
@@ -38,9 +38,9 @@ header('Cache-Control: no-cache');
           <path d="M19 45v-9h9m155 87h9v-9" opacity=".55"/>
         </g></svg>
       </div>
-      <div class="section-head"><div><div class="kicker">STUDY DESK</div><h2>练习工作台</h2></div></div>
+      <div class="section-head"><div><div class="kicker">STUDY DESK</div><h2>练习工作台</h2><p class="muted">登录后可开始练习或模拟考试，交卷成绩会保存到当前账号。</p></div></div>
       <div class="home-grid">
-        <article class="panel home-card"><span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10zM13 3v7h7M8 14h8m-8 3h5"/></svg></span><h3>练习模式</h3><p>按顺序完成 300 题后交卷。答对 3 秒后进入下一题，答错看解析后手动翻题。登录后退出练习时可保存进度。</p><button id="practice-home" data-do="start" data-value="practice" class="primary" disabled>开始练习 <b aria-hidden="true">→</b></button></article>
+        <article class="panel home-card"><span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10zM13 3v7h7M8 14h8m-8 3h5"/></svg></span><h3>练习模式</h3><p>按顺序完成 300 题后交卷。答对 3 秒后进入下一题，答错看解析后手动翻题。中途退出时可保存进度。</p><button id="practice-home" data-do="start" data-value="practice" class="primary" disabled>开始练习 <b aria-hidden="true">→</b></button></article>
         <article class="panel home-card"><span class="card-icon blue" aria-hidden="true">100</span><h3>模拟考试</h3><p>随机抽取 100 道题，交卷前可修改答案，不提前显示正解。</p><button id="start-home" data-do="start" data-value="exam" class="secondary" disabled>开始考试 <b aria-hidden="true">→</b></button></article>
         <article class="panel home-card history-entry"><span class="card-icon blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2 7m-2-5v-4m0 4h4m5-6v5l3 2"/></svg></span><h3>我的练习记录</h3><p>按时间查看已提交的试卷，重新查看作答与正解，定位需要巩固的题目。</p><button id="history-home" data-do="history" class="secondary" disabled>查看历史 <b aria-hidden="true">→</b></button></article>
       </div>
@@ -53,11 +53,6 @@ header('Cache-Control: no-cache');
 <dialog id="practice-choice" aria-labelledby="practice-choice-title">
   <div class="dialog-top"><span class="kicker">练习进度</span><button type="button" class="close" data-do="cancel-practice" aria-label="取消操作">×</button></div>
   <h2 id="practice-choice-title"></h2><div class="choice-actions" id="practice-choice-actions"></div>
-</dialog>
-<dialog id="submit-choice" aria-labelledby="choice-title" aria-describedby="choice-note">
-  <div class="dialog-top"><span class="kicker">提交试卷</span><button type="button" class="close" data-do="continue-exam" aria-label="返回继续答题">×</button></div>
-  <h2 id="choice-title">要登录并将成绩保存到云端吗？</h2><p class="muted" id="choice-note"></p>
-  <div class="choice-actions"><button type="button" class="primary" data-do="cloud-login">登录并保存到云端</button><button type="button" class="secondary" data-do="guest-grade">不登录，只看成绩</button><button type="button" class="text-link" data-do="continue-exam">返回继续答题</button></div>
 </dialog>
 <dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form">
   <div class="dialog-top"><span class="kicker">ACCOUNT</span><button type="button" class="close" data-do="close-login" aria-label="关闭登录窗口">×</button></div>

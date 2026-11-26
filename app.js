@@ -47,7 +47,7 @@
   const actionRow = (...children) => { const row = make('div','actions'); row.append(...children); return row; };
   const label = i => String.fromCharCode(65 + i);
   const timeText = t => {
-    const d = new Date(t); return Number.isNaN(+d) ? '时间未知' : new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);
+    const d = new Date(t); return Number.isNaN(+d) ? '时间未知' : new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZone:'Asia/Shanghai'}).format(d)+'（北京时间）';
   };
   const percent = (value,total) => `${total ? +(100*value/total).toFixed(1) : 0}%`;
   const attempted = p => p.answers.reduce((n,a) => n + Number(a != null),0);
@@ -94,8 +94,7 @@
   }
   function showLogin(pending=null) {
     state.pending=pending; $('login-error').hidden=true;
-    $('login-title').textContent=pending==='submit'?'登录并保存本次成绩':'登录练习室';
-    $('login-note').textContent=pending==='submit'?'登录成功后将提交当前试卷，无需重新答题。新用户名会自动创建账号。':'首次登录将自动创建账号，请记住用户名和密码。';
+    $('login-title').textContent=pending==='practice'||pending==='exam'?'请先登录再答题':'登录练习室';
     dialog.showModal(); $('username').focus();
   }
   dialog.addEventListener('close',()=>{ $('password').value=''; state.pending=null; });
@@ -111,11 +110,8 @@
   }
   function confirmPracticeExit(target) {
     exitTarget=target;
-    if (state.user) offerPracticeChoice('是否保存当前答题记录到云端？',[
+    offerPracticeChoice('是否保存当前答题记录到云端？',[
       ['保存并退出','save-exit','primary'],['不保存并退出','leave-practice','secondary'],['继续答题','cancel-practice','text-link']
-    ]);
-    else offerPracticeChoice('你当前没有登录账号！退出后不会保存你的答题记录！',[
-      ['取消','cancel-practice','primary'],['退出','leave-practice','secondary']
     ]);
   }
   async function exitPractice(save) {
@@ -141,6 +137,7 @@
     state.paper=p; view('exam');
   }
   async function start(mode='practice') {
+    if (!state.user) return showLogin(mode);
     const active=practiceActive();
     if (state.view==='exam' && !window.confirm('重新开始将清空本套作答，确定继续吗？')) return;
     if (mode==='practice' && state.user && !active) {
@@ -159,15 +156,9 @@
     const p=state.paper, n=p.questions.length-attempted(p);
     if (p.mode==='practice' && n) return notice('练习模式需按顺序完成全部题目后才能交卷。');
     const status=n ? `还有 ${n} 题未答，未答计入错题率。` : '你已答完全部题目。';
-    if (!state.user) {
-      $('choice-note').textContent=`${status}不登录也能查看成绩和正确答案，但不会生成云端记录。`;
-      $('submit-choice').showModal(); return;
+    if (window.confirm(`${status}确认交卷并保存到当前账号？`)) {
+      state.paper=await api('submit',{id:p.id,answers:p.answers}); state.source='submit'; view('result');
     }
-    if (window.confirm(`${status}确认交卷并保存到当前账号？`)) await finish(true);
-  }
-  async function finish(save) {
-    const p=state.paper;
-    state.paper=await api(save?'submit':'grade',{id:p.id,answers:p.answers}); state.source=save?'submit':'guest'; view('result');
   }
   async function historyPage(page) {
     if (!state.user) return showLogin('history');
@@ -280,7 +271,7 @@
     const facts=make('dl','score-facts'); [[p.total,'总题数',''],[p.right,'答对','right'],[p.wrong,'答错','wrong'],[p.miss,'未答','miss']].forEach(([v,t,cls])=>{const div=make('div',cls);div.append(make('dt','',t),make('dd','',v));facts.append(div);}); card.append(score,facts);
     const review=make('article','panel result-actions'); review.append(make('h2','','试卷复盘'),make('p','muted',`错题率（含未答）：${percent(p.wrong+p.miss,p.total)}。${first<0?'本套全部答对。':'可直接跳到第一道答错或未答的题目。'}`));
     const actions=actionRow(button('逐题复盘','review','primary',0)); if(first>=0) actions.append(button('定位首错','review','secondary',first)); review.append(actions);
-    work.replaceChildren(head(state.source==='history'?'ARCHIVED RESULT':'SESSION RESULT',state.source==='history'?'历史成绩':'练习成绩',`${modeTitle(p)} · ${timeText(p.time)} · ${state.source==='guest'?'游客成绩，未保存到云端':'已保存到云端'}`,actionRow(button('练习首页','home','mini'))),card,review,actionRow(button(state.source==='history'?'返回记录列表':'查看历史','history','secondary',state.source==='history'?state.page:1),button(p.mode==='practice'?'重练全套':'重新抽题','start','secondary',p.mode)));
+    work.replaceChildren(head(state.source==='history'?'ARCHIVED RESULT':'SESSION RESULT',state.source==='history'?'历史成绩':'练习成绩',`${modeTitle(p)} · ${timeText(p.time)} · 已保存到云端`,actionRow(button('练习首页','home','mini'))),card,review,actionRow(button(state.source==='history'?'返回记录列表':'查看历史','history','secondary',state.source==='history'?state.page:1),button(p.mode==='practice'?'重练全套':'重新抽题','start','secondary',p.mode)));
   }
   function renderHistory() {
     const list=make('div','history-list');
@@ -312,9 +303,6 @@
     const b=event.target.closest('button[data-do]'); if (!b || b.disabled || state.busy) return;
     const a=b.dataset.do,v=b.dataset.value;
     cancelAdvance();
-    if(a==='continue-exam') return $('submit-choice').close();
-    if(a==='cloud-login') { $('submit-choice').close(); return showLogin('submit'); }
-    if(a==='guest-grade') { $('submit-choice').close(); return void run(()=>finish(false)); }
     if(a==='close-login') return dialog.close();
     if(a==='login') return showLogin();
     if(a==='answer' && state.view==='exam') return answer(Number(v));
@@ -345,7 +333,8 @@
     event.preventDefault(); void run(async()=>{
       const username=$('username').value, password=$('password').value;
       const pending=state.pending; session(await api('login',{username,password})); dialog.close(); $('login-form').reset();
-      if(pending==='submit') await finish(true); if(pending==='history') await historyPage(1);
+      if(pending==='practice'||pending==='exam') await start(pending);
+      if(pending==='history') await historyPage(1);
     });
   });
   resetConnection(); void run(async()=>session(await api('me')));

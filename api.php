@@ -62,8 +62,6 @@ function login(array $data): void {
     if (!$created) query('UPDATE auth_limits SET hits=max(0,hits-1) WHERE bucket=?', [$ip]);
     if ((int)$row['banned'] !== 0) fail('该账号已停用。', 403);
     $next = ['uid' => (int)$row['id'], 'user' => $row['username'], 'account_tag' => hash('sha256', $row['password_hash']), 'account_version' => (int)$row['session_version']];
-    // 仅将本会话尚未交卷的游客试卷带入登录态，不在账号间转移试卷。
-    if (!isset($_SESSION['uid']) && isset($_SESSION['active'])) $next['active'] = $_SESSION['active'];
     resetSession($next);
     respond(identity());
 }
@@ -83,7 +81,7 @@ function lockActiveAccount(int $uid): void {
         db()->exec('ROLLBACK'); resetSession([]); fail('当前登录已失效，请重新登录。', 401);
     }
 }
-function startPaper(array $body): void {
+function startPaper(array $body, int $uid): void {
     $mode = $body['mode'] ?? 'exam';
     if (!in_array($mode, ['exam', 'practice'], true)) fail('练习模式无效。', 422);
     $bank = bank(); $ids = array_keys($bank); $feedback = [];
@@ -99,12 +97,11 @@ function startPaper(array $body): void {
     $paper = array_map(static fn($id) => $bank[$id], $ids);
     if ($mode === 'practice') foreach ($paper as $i => $q) $paper[$i][3] = $notes[$ids[$i]];
     $id = bin2hex(random_bytes(16));
-    if ($mode === 'practice' && ($body['discardDraft'] ?? false) === true && isset($_SESSION['uid'])) {
-        lockActiveAccount($_SESSION['uid']);
-        query('DELETE FROM practice_drafts WHERE user_id=?', [$_SESSION['uid']]);
+    if ($mode === 'practice' && ($body['discardDraft'] ?? false) === true) {
+        lockActiveAccount($uid);
+        query('DELETE FROM practice_drafts WHERE user_id=?', [$uid]);
         db()->exec('COMMIT');
     }
-    unset($_SESSION['guest_receipt']);
     $_SESSION['active'] = ['id' => $id, 'paper' => $paper, 'mode' => $mode];
     respond(['id' => $id, 'mode' => $mode, 'questions' => questions($paper)] + $feedback);
 }
@@ -157,29 +154,21 @@ function resumeDraft(int $uid): void {
     $draft = query('SELECT * FROM practice_drafts WHERE user_id=?', [$uid])->fetch();
     if (!$draft) fail('没有可继续的练习，请重新开始。', 404);
     $paper = json_decode($draft['paper'], true, 16, JSON_THROW_ON_ERROR);
-    $id = $draft['paper_id']; unset($_SESSION['guest_receipt']);
+    $id = $draft['paper_id'];
     $_SESSION['active'] = ['id'=>$id,'paper'=>$paper,'mode'=>'practice'];
     respond(['id'=>$id,'mode'=>'practice','questions'=>questions($paper),'correct'=>array_column($paper,2),
         'explanations'=>array_column($paper,3),'answers'=>json_decode($draft['answers'],true,8,JSON_THROW_ON_ERROR),'index'=>(int)$draft['position']]);
 }
-function submitPaper(array $body, ?int $uid): void {
+function submitPaper(array $body, int $uid): void {
     $id = attemptId($body['id'] ?? null);
     // 重试同一次提交时直接返回已落库的结果，不重复保存或覆盖成绩。
-    if ($uid !== null && ($prior = record($id, $uid))) respond(detail($prior));
-    if ($uid === null && ($_SESSION['guest_receipt']['id'] ?? '') === $id) respond($_SESSION['guest_receipt']);
+    if ($prior = record($id, $uid)) respond(detail($prior));
     $active = $_SESSION['active'] ?? [];
     if (($active['id'] ?? '') !== $id) fail('这套练习已失效，请返回首页重新抽题。', 409);
     $paper = $active['paper']; $total = count($paper); $answers = $body['answers'] ?? null;
     $practice = ($active['mode'] ?? 'exam') === 'practice';
     [$right,$miss] = checkAnswers($paper,$answers,$practice);
     if ($practice && $miss) fail('练习模式需全部作答后才能交卷，中途可退出并保存进度。', 422);
-    if ($uid === null) {
-        // 仅在短期会话保留回执供网络重试，不写入账号或历史数据库。
-        $_SESSION['guest_receipt'] = ['id'=>$id, 'mode'=>$active['mode'] ?? 'exam', 'time'=>gmdate('Y-m-d\TH:i:s\Z'), 'right'=>$right,
-            'wrong'=>$total-$right-$miss, 'miss'=>$miss, 'total'=>$total, 'questions'=>questions($paper),
-            'correct'=>array_column($paper, 2), 'explanations'=>array_column($paper, 3), 'answers'=>$answers];
-        unset($_SESSION['active']); respond($_SESSION['guest_receipt']);
-    }
     lockActiveAccount($uid);
     query('INSERT OR IGNORE INTO attempts(id,user_id,mode,finished,right_n,wrong_n,miss_n,total,paper,answers) VALUES (?,?,?,?,?,?,?,?,?,?)',
         [$id, $uid, $active['mode'] ?? 'exam', time(), $right, $total - $right - $miss, $miss, $total, json_encode($paper, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), json_encode($answers, JSON_THROW_ON_ERROR)]);
@@ -207,19 +196,18 @@ try {
     if (!session_start()) throw new RuntimeException('session storage unavailable');
     $_SESSION['csrf'] ??= bin2hex(random_bytes(32));
     $action = $_GET['action'] ?? '';
-    $methods = ['me'=>'GET', 'login'=>'POST', 'logout'=>'POST', 'start'=>'POST', 'grade'=>'POST', 'submit'=>'POST', 'history'=>'GET', 'detail'=>'GET', 'draft'=>'GET', 'saveDraft'=>'POST', 'resumeDraft'=>'POST'];
+    $methods = ['me'=>'GET', 'login'=>'POST', 'logout'=>'POST', 'start'=>'POST', 'submit'=>'POST', 'history'=>'GET', 'detail'=>'GET', 'draft'=>'GET', 'saveDraft'=>'POST', 'resumeDraft'=>'POST'];
     if (!is_string($action) || !isset($methods[$action])) fail('接口不存在。', 404);
     if ($_SERVER['REQUEST_METHOD'] !== $methods[$action]) { header('Allow: ' . $methods[$action]); fail('请求方法不正确。', 405); }
     // 删除、改名、封禁均使既有会话失效；解封也不会让旧会话复活。
     if (isset($_SESSION['uid']) && !activeAccount($_SESSION['uid'])) resetSession([]);
-    $body = $methods[$action] === 'POST' ? readInput($action === 'login' ? 1048576 : 8192) : [];
     if ($action === 'me') respond(identity());
-    if ($action === 'login') login($body);
+    if ($action === 'login') login(readInput(1048576));
     $uid = $_SESSION['uid'] ?? null;
-    if ($action === 'start') startPaper($body);
-    if ($action === 'grade') submitPaper($body, null);
     if (!$uid) fail('请先登录。', 401);
+    $body = $methods[$action] === 'POST' ? readInput(8192) : [];
     switch ($action) {
+        case 'start': startPaper($body, $uid); break;
         case 'logout': resetSession([]); respond(identity()); break;
         case 'submit': submitPaper($body, $uid); break;
         case 'history': history($uid); break;

@@ -222,7 +222,9 @@ function adminPanelDescribeScore(array $score): string {
 }
 
 function adminPanelDate($value): string {
-    return gmdate('Y-m-d H:i:s', (int)$value) . ' UTC';
+    static $zone;
+    $zone ??= new DateTimeZone('Asia/Shanghai');
+    return (new DateTimeImmutable('@'.(int)$value))->setTimezone($zone)->format('Y-m-d H:i:s');
 }
 
 function adminPanelMode(string $mode): string {
@@ -273,10 +275,10 @@ function adminPanelExport(PDO $db, array $filter): void {
     header('Cache-Control: no-store, private');
     header('X-Content-Type-Options: nosniff');
     fwrite($output, "\xEF\xBB\xBF");
-    fputcsv($output, ['记录编号', '用户编号', '用户名', '模式', '交卷时间（UTC）', '答对', '答错', '未答', '总题数'], ',', '"', '');
+    fputcsv($output, ['记录编号', '用户编号', '用户名', '模式', '交卷时间（北京时间）', '答对', '答错', '未答', '总题数'], ',', '"', '');
     while ($row = $query->fetch(PDO::FETCH_ASSOC)) {
         fputcsv($output, [adminPanelCsvField($row['id']), (int)$row['user_id'], adminPanelCsvField($row['username']),
-            adminPanelMode($row['mode']), gmdate('Y-m-d H:i:s', (int)$row['finished']), ...adminPanelScore($row)], ',', '"', '');
+            adminPanelMode($row['mode']), adminPanelDate($row['finished']), ...adminPanelScore($row)], ',', '"', '');
     }
     fclose($output);
 }
@@ -299,7 +301,7 @@ function adminPanelPageNav(string $view, array $params, array $pageInfo): void {
 
 function adminPanelRecordTable(array $rows): void {
     if (!$rows) { echo '<p class="muted">没有匹配的成绩记录。</p>'; return; }
-    echo '<div class="table-wrap"><table><thead><tr><th>用户</th><th>模式</th><th>交卷时间</th><th>答对</th><th>答错</th><th>未答</th><th>总题数</th><th>操作</th></tr></thead><tbody>';
+    echo '<div class="table-wrap"><table><thead><tr><th>用户</th><th>模式</th><th>交卷时间（北京时间）</th><th>答对</th><th>答错</th><th>未答</th><th>总题数</th><th>操作</th></tr></thead><tbody>';
     foreach ($rows as $row) {
         echo '<tr><td><a href="', h(adminPanelUrl('user', ['id' => $row['user_id']])), '">', h($row['username']), '</a></td><td>',
             h(adminPanelMode($row['mode'])), '</td><td>', h(adminPanelDate($row['finished'])), '</td>';
@@ -355,7 +357,7 @@ function adminPanelUsers(PDO $db): void {
         $banned === '1' ? ' selected' : '', '>已封禁</option></select></label><button class="btn" type="submit">搜索</button> <a class="btn" href="', h(adminPanelUrl('users')), '">重置</a></form>';
     if (!$rows) echo '<p class="muted">没有匹配的用户。</p>';
     else {
-        echo '<div class="table-wrap"><table><thead><tr><th>编号</th><th>用户名</th><th>注册时间</th><th>状态</th><th>成绩数</th><th>操作</th></tr></thead><tbody>';
+        echo '<div class="table-wrap"><table><thead><tr><th>编号</th><th>用户名</th><th>注册时间（北京时间）</th><th>状态</th><th>成绩数</th><th>操作</th></tr></thead><tbody>';
         foreach ($rows as $user) {
             echo '<tr><td>', (int)$user['id'], '</td><td>', h($user['username']), '</td><td>', h(adminPanelDate($user['created_at'])), '</td><td>',
                 $user['banned'] ? '已封禁' : '正常', '</td><td>', (int)$user['attempts'], '</td><td><a class="btn" href="',
@@ -378,7 +380,7 @@ function adminPanelUser(PDO $db): void {
     $fields = ['user_id' => $id];
     adminHeader('管理用户');
     echo '<h1>管理用户</h1><section class="panel"><h2>', h($user['username']), '</h2><p>编号：', $id,
-        ' · 注册时间：', h(adminPanelDate($user['created_at'])), ' · 账号状态：', $user['banned'] ? '已封禁' : '正常',
+        ' · 注册时间（北京时间）：', h(adminPanelDate($user['created_at'])), ' · 账号状态：', $user['banned'] ? '已封禁' : '正常',
         '</p><p>练习草稿：', $draft ? ('已答 ' . (int)$draft['answered'] . ' / ' . (int)$draft['total'] . ' 题') : '无',
         '</p><div class="actions"><a class="btn" href="', h(adminPanelUrl('users')), '">返回用户列表</a> <a class="btn" href="',
         h(adminPanelUrl('records', $fields)), '">查看该用户成绩（', $records, ' 条）</a></div></section>';
@@ -387,7 +389,7 @@ function adminPanelUser(PDO $db): void {
     adminPanelForm('rename_user', $fields);
     echo '<label>新用户名 <input type="text" name="username" autocomplete="off" value="', h($user['username']), '" required></label>
         <button type="submit" class="btn">保存用户名</button></form></section><section class="panel"><h2>账号状态</h2>
-        <p class="muted">封禁会阻止该账号登录和继续使用登录后功能，不删除成绩或草稿，也不改变游客练习功能。</p>';
+        <p class="muted">封禁会阻止该账号登录和继续使用登录后功能，不删除成绩或草稿。</p>';
     adminPanelForm($user['banned'] ? 'unban_user' : 'ban_user', $fields);
     echo $user['banned'] ? '<button type="submit" class="btn">解封账号</button>' : '<button type="submit" class="btn danger">封禁账号</button>';
     echo '</form></section></div><div class="grid">
@@ -456,7 +458,7 @@ function adminPanelRecord(PDO $db): void {
     adminHeader('成绩详情');
     echo '<h1>成绩详情</h1><section class="panel"><h2>交卷信息</h2><p>记录编号：', h($id), '</p><p>用户：<a href="',
         h(adminPanelUrl('user', ['id' => $row['user_id']])), '">', h($row['username']), '</a> · 模式：', h(adminPanelMode($row['mode'])),
-        ' · 交卷时间：', h(adminPanelDate($row['finished'])), '</p><p>当前成绩：', h(adminPanelDescribeScore($stored)), '</p>';
+        ' · 交卷时间（北京时间）：', h(adminPanelDate($row['finished'])), '</p><p>当前成绩：', h(adminPanelDescribeScore($stored)), '</p>';
     if ($snapshot) {
         echo '<p>明细计算：', h(adminPanelDescribeScore($snapshot[2])), $snapshot[2] === $stored ? '' : '（与当前成绩不一致）', '</p>';
     }
@@ -503,7 +505,7 @@ function adminPanelLog(PDO $db): void {
         <a class="btn" href="', h(adminPanelUrl('log')), '">重置</a></form>';
     if (!$rows) echo '<p class="muted">没有匹配的审计记录。</p>';
     else {
-        echo '<div class="table-wrap"><table><thead><tr><th>编号</th><th>时间</th><th>操作</th><th>目标</th><th>详情</th></tr></thead><tbody>';
+        echo '<div class="table-wrap"><table><thead><tr><th>编号</th><th>时间（北京时间）</th><th>操作</th><th>目标</th><th>详情</th></tr></thead><tbody>';
         foreach ($rows as $row) {
             echo '<tr><td>', (int)$row['id'], '</td><td>', h(adminPanelDate($row['created_at'])), '</td><td>', h($labels[$row['action']] ?? $row['action']),
                 '</td><td>', h($row['target']), '</td><td>', h($row['detail']), '</td></tr>';
